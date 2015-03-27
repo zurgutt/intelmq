@@ -48,8 +48,36 @@ class Pipeline():
         for queue in queues:
             qdict[queue] = self.redis.llen(queue)
         return qdict
+    
+    def reserve(self, count=1, blocking=True):
+        pull_count = count - self.redis.llen(self.internal_queue)
+        
+        if pull_count > 0:
+            for i in xrange(pull_count):
+                if blocking:
+                    self.redis.brpoplpush(self.source_queue,
+                                          self.internal_queue, 0)
+                else:
+                    self.redis.rpoplpush(self.source_queue,
+                                         self.internal_queue)
+                    
+        return self.redis.lrange(self.internal_queue,
+                                 0, self.redis.llen(self.internal_queue))
 
-
+    def release(self, events):
+        for message in events:
+            for destination_queue in self.destination_queues:
+                self.redis.lpush(destination_queue, message)
+        
+        # If item count in memory matches that of in redis, assume all have
+        # been released to output. Otherwise, match and release.
+        if events.count() == self.redis.llen(self.internal_queue):
+            self.redis.delete(self.internal_queue)
+        else:
+            # TODO: Should match by some id here and delete selectively.
+            self.redis.delete(self.internal_queue)
+            
+ 
 # Algorithm
 # ---------
 # [Receive]     B RPOP LPUSH   source_queue ->  internal_queue

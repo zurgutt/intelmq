@@ -13,6 +13,7 @@ PIPELINE_CONF_FILE = "/opt/intelmq/etc/pipeline.conf"
 RUNTIME_CONF_FILE = "/opt/intelmq/etc/runtime.conf"
 DEFAULT_LOGGING_PATH = "/opt/intelmq/var/log/"
 DEFAULT_LOGGING_LEVEL = "INFO"
+REPORT_STEP = 500
 
 
 class Bot(object):
@@ -22,7 +23,12 @@ class Bot(object):
         
         self.current_message = None
         self.last_message = None
+        
+        self.work_batch = None
+        """ In normal situations should match items in redis internal queue."""
+        
         self.message_counter = 0
+        self.last_counter_reported = 0
 
         self.check_bot_id(bot_id)
         self.bot_id = bot_id
@@ -200,6 +206,30 @@ class Bot(object):
         self.last_message = self.current_message
         self.source_pipeline.acknowledge()
 
+    def reserve(self, count=1):
+        event_batch_encoded = self.source_pipeline.reserve(count)
+        
+        if not event_batch_encoded:
+            return None
+        
+        self.work_batch = [Event.from_unicode(event_enc.decode('utf-8'))
+                           for event_enc in event_batch_encoded]
+        return self.work_batch
+    
+    def release(self, events):
+        if not events:
+            self.logger.warning("No events given to release.")
+            return False
+        
+        event_list = [unicode(event) for event in events]
+        
+        self.message_counter += event_list.count()
+        if self.message_counter - self.last_counter_reported > REPORT_STEP:
+            self.last_counter_reported = self.message_counter 
+            self.logger.info("Processed %s messages" % self.message_counter)
+            
+        self.destination_pipeline.release(event_list)
+        
 
 class Parameters(object):
     pass
